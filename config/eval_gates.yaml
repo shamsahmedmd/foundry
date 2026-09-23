@@ -1,0 +1,35 @@
+# Evaluation gate profiles (thresholds from the reference architecture).
+# scripts/check_eval_gates.py --profile <name> enforces one profile.
+# Any value can be overridden on the command line (e.g. --max-hallucination 0.04).
+#
+#   ci   -> used in the Dev stage, after the candidate version is deployed
+#   test -> used in the Test stage before a version may go to Production
+#   prod -> used by the post-deploy smoke evaluation in Production
+
+profiles:
+  ci:
+    max_hallucination_rate: 0.05       # < 5%
+    min_task_completion_rate: 0.90     # > 90%
+    min_grounded_response_rate: 0.95   # > 95%
+    max_policy_violations: 0
+    max_latency_p95_ms: 4000
+    max_token_regression: null         # track only
+    max_error_rate: 0.05
+
+  test:
+    max_hallucination_rate: 0.03       # < 3%
+    min_task_completion_rate: 0.95     # > 95%
+    min_grounded_response_rate: 0.98   # > 98%
+    max_policy_violations: 0
+    max_latency_p95_ms: 3000
+    max_token_regression: 0.20         # fail on > 20% token growth vs baseline
+    max_error_rate: 0.02
+
+  prod:
+    max_hallucination_rate: 0.03
+    min_task_completion_rate: 0.95
+    min_grounded_response_rate: 0.98
+    max_policy_violations: 0
+    max_latency_p95_ms: 3000
+    max_token_regression: 0.20
+    max_error_rate: 0.0

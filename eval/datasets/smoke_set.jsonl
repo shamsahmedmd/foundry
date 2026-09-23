@@ -1,0 +1,2 @@
+{"query": "What is your return policy?", "must_contain": ["30 days"]}
+{"query": "How long does standard shipping take?", "must_contain": ["3-5"]}

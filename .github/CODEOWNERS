@@ -1,0 +1,7 @@
+# Changes to release gates, evaluation datasets, prompts and pipelines need an owner's review.
+# Replace the team handles with the client's.
+/config/eval_gates.yaml     @contoso/ai-platform @contoso/ai-product-owner
+/eval/datasets/             @contoso/ai-platform @contoso/ai-product-owner
+/prompts/                   @contoso/ai-platform
+/.github/workflows/         @contoso/ai-platform
+/infra/                     @contoso/ai-platform

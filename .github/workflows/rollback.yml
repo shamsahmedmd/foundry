@@ -1,0 +1,53 @@
+# Manual rollback: point an environment's agent endpoint back at a known-good version.
+# No redeployment — the previous version is still provisioned in the Foundry project.
+name: agent-rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to roll back
+        type: choice
+        options: [dev, test, prod]
+        required: true
+      agent_version:
+        description: Known-good agent version to route traffic to (see the deploy job summary)
+        required: true
+      delete_version:
+        description: Also delete this (failing) version after rolling back (optional)
+        required: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      FOUNDRY_PROJECT_ENDPOINT: ${{ vars.FOUNDRY_PROJECT_ENDPOINT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Current version
+        run: python scripts/get_active_version.py --env "${{ inputs.environment }}"
+      - name: Roll back
+        run: |
+          python scripts/promote_agent.py \
+            --from-env "${{ inputs.environment }}" --to-env "${{ inputs.environment }}" \
+            --agent-version "${{ inputs.agent_version }}"
+      - name: Smoke test
+        run: python scripts/smoke_test.py
+      - name: Delete failing version
+        if: inputs.delete_version != ''
+        run: python scripts/delete_agent_version.py --agent-version "${{ inputs.delete_version }}"

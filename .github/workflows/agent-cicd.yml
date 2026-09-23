@@ -1,0 +1,231 @@
+# CI/CD for a Microsoft Foundry prompt agent.
+#
+#   PR   -> validate (lint, security scan, schema + secret checks, unit tests)
+#   main -> validate -> release manifest
+#           -> dev  (deploy, smoke test, golden-set eval, "ci" gate)
+#           -> test (approval, promote, scenario + safety eval, "test" gate, auto-rollback)
+#           -> prod (required reviewers, promote, enable endpoint, smoke test, auto-rollback)
+#
+# Auth: OIDC workload identity federation (azure/login). No Azure secrets stored.
+# One-time setup: infra/scripts/setup-github-oidc.sh — see docs/setup.md.
+#
+# Repository variables:   AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+# Environment variables (dev, test, prod):
+#                         AZURE_CLIENT_ID, FOUNDRY_PROJECT_ENDPOINT, AZURE_OPENAI_ENDPOINT, EVAL_MODEL_DEPLOYMENT
+name: agent-cicd
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    paths-ignore: ["docs/**", "**.md"]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: agent-cicd-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # ------------------------------------------------------------------ CI
+  validate:
+    name: CI · validate & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: ruff check . --output-format=github
+      - name: Security scan (bandit)
+        run: bandit -c pyproject.toml -r scripts -ll
+      - name: Validate agent definition
+        run: python scripts/validate_agent_config.py --config agent.yaml
+      - name: Unit tests
+        run: pytest -v --tb=short --junitxml=test-results/unit.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: test-results/
+
+  release:
+    name: CI · release manifest
+    needs: validate
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements.txt
+      - name: Build release manifest
+        run: python scripts/build_manifest.py --config agent.yaml --git-sha "$GITHUB_SHA"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: release/manifest.json
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------ CD: Dev
+  deploy-dev:
+    name: CD · Dev
+    needs: release
+    runs-on: ubuntu-latest
+    environment: dev
+    outputs:
+      agent_version: ${{ steps.deploy.outputs.agent_version }}
+    env:
+      FOUNDRY_PROJECT_ENDPOINT: ${{ vars.FOUNDRY_PROJECT_ENDPOINT }}
+      AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+      EVAL_MODEL_DEPLOYMENT: ${{ vars.EVAL_MODEL_DEPLOYMENT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy new agent version
+        id: deploy
+        run: python scripts/deploy_agent.py --env dev --manifest release/manifest.json
+      - name: Smoke test
+        run: python scripts/smoke_test.py
+      - name: Evaluate (golden set)
+        run: |
+          python scripts/run_evaluations.py \
+            --dataset eval/datasets/golden_set.jsonl \
+            --output  eval/results/dev-results.json
+      - name: Evaluation gate (ci profile)
+        run: python scripts/check_eval_gates.py --results eval/results/dev-results.json --profile ci
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-dev
+          path: eval/results/
+
+  # ------------------------------------------------------------------ CD: Test
+  deploy-test:
+    name: CD · Test
+    needs: deploy-dev
+    runs-on: ubuntu-latest
+    environment: test          # configure "Required reviewers" (human-in-the-loop) on this environment
+    outputs:
+      agent_version: ${{ steps.promote.outputs.agent_version }}
+    env:
+      FOUNDRY_PROJECT_ENDPOINT: ${{ vars.FOUNDRY_PROJECT_ENDPOINT }}
+      AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+      EVAL_MODEL_DEPLOYMENT: ${{ vars.EVAL_MODEL_DEPLOYMENT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Promote dev -> test
+        id: promote
+        run: |
+          python scripts/promote_agent.py --from-env dev --to-env test \
+            --agent-version "${{ needs.deploy-dev.outputs.agent_version }}" \
+            --manifest release/manifest.json
+      - name: Smoke test
+        run: python scripts/smoke_test.py
+      - name: Scenario + safety evaluation
+        run: |
+          python scripts/run_evaluations.py \
+            --dataset  eval/datasets/scenario_set.jsonl \
+            --output   eval/results/test-results.json \
+            --baseline eval/baselines/test.json
+      - name: Evaluation gate (test profile)
+        run: python scripts/check_eval_gates.py --results eval/results/test-results.json --profile test
+      - name: Roll back test on failure
+        if: failure() && steps.promote.outputs.previous_version != ''
+        run: |
+          python scripts/promote_agent.py --from-env test --to-env test \
+            --agent-version "${{ steps.promote.outputs.previous_version }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-test
+          path: eval/results/
+
+  # ------------------------------------------------------------------ CD: Prod
+  deploy-prod:
+    name: CD · Production
+    needs: deploy-test
+    runs-on: ubuntu-latest
+    environment: prod          # configure "Required reviewers" + "Prevent self-review" + main-only on this environment
+    env:
+      FOUNDRY_PROJECT_ENDPOINT: ${{ vars.FOUNDRY_PROJECT_ENDPOINT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Promote test -> prod
+        id: promote
+        run: |
+          python scripts/promote_agent.py --from-env test --to-env prod \
+            --agent-version "${{ needs.deploy-test.outputs.agent_version }}" \
+            --manifest release/manifest.json
+      - name: Enable production endpoint
+        run: python scripts/enable_agent_endpoint.py --agent-version "${{ steps.promote.outputs.agent_version }}"
+      - name: Post-deploy smoke test
+        run: python scripts/smoke_test.py
+      - name: Automatic rollback
+        if: failure() && steps.promote.outputs.previous_version != ''
+        run: |
+          echo "::error::Production smoke test failed - rolling back to v${{ steps.promote.outputs.previous_version }}"
+          python scripts/promote_agent.py --from-env prod --to-env prod \
+            --agent-version "${{ steps.promote.outputs.previous_version }}"
