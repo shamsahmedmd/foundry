@@ -1,0 +1,7 @@
+# Pipeline / deployment tooling used by scripts/ and the GitHub Actions workflow.
+azure-ai-projects>=2.3.0,<3
+azure-ai-evaluation>=1.13.0,<2
+azure-identity>=1.25.0
+openai>=2.0.0
+jsonschema>=4.23
+PyYAML>=6.0

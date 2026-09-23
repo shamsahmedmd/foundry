@@ -1,0 +1,35 @@
+# -----------------------------------------------------------------------------
+# Prompt agent definition — the single source of truth promoted Dev -> Test -> Prod.
+#
+# Every pipeline run turns this file + the prompt into an immutable release
+# manifest (release/manifest.json). The same manifest is deployed to each Foundry
+# project, so what was evaluated in Test is exactly what runs in Prod.
+#
+# Validated against schemas/agent.schema.json by scripts/validate_agent_config.py
+# -----------------------------------------------------------------------------
+name: contoso-support-agent            # alphanumeric + hyphens, max 63 chars
+kind: prompt
+description: Customer support agent that answers shipping, returns, refunds and warranty questions.
+
+# Model deployment name. Must exist (with the same name) in every Foundry project.
+model: gpt-4.1-mini
+
+# System instructions, versioned with the code and hashed into every release.
+instructions_file: prompts/system.md
+
+prompt:
+  temperature: 0.2
+  # Optional server-side tools, passed to PromptAgentDefinition as-is.
+  # Function tools are not allowed (they need client-side execution).
+  tools: []
+  #  - type: mcp
+  #    server_label: orders
+  #    server_url: https://orders-mcp.contoso.example/mcp
+  #    require_approval: never
+  #  - type: file_search
+  #    vector_store_ids: ["<vector-store-id>"]
+
+# Free-form tags recorded on every agent version for the audit trail.
+metadata:
+  owner: ai-platform-team
+  cost_center: "0000"
