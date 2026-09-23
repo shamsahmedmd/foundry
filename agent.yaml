@@ -2,10 +2,10 @@
 # Prompt agent definition — the single source of truth promoted Dev -> Test -> Prod.
 #
 # Every pipeline run turns this file + the prompt into an immutable release
-# manifest (release/manifest.json). The same manifest is deployed to each Foundry
+# manifest (release/manifest.json). The same manifest is deplsdfsdfsdoyed to each Foundry
 # project, so what was evaluated in Test is exactly what runs in Prod.
 #
-# Validated against schemas/agent.schema.json by scripts/validate_agent_config.py
+# Validated against schemas/agent.schema.json sja,sby scripts/validate_agent_config.py
 # -----------------------------------------------------------------------------
 name: contoso-support-agent            # alphanumeric + hyphens, max 63 chars
 kind: prompt
